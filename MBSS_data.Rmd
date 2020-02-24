@@ -1,0 +1,47 @@
+---
+title: "MBSS_data"
+author: "M. Fork"
+date: "2/24/2020"
+output: html_document
+---
+
+This code munges and manipulates the MBSS data for Baltimore City and County prepared for Megan Fork by Tomas Ivansauskas (tomas.ivansauskas@maryland.gov) and sent by email on 14 January, 2020.
+
+```{r Packages and functions}
+
+library(readxl)
+library(tidyverse)
+library(mapview)   
+library(sf)
+library(magrittr)
+
+```
+
+
+```{r Load data}
+
+Site_Info<-read_excel('MBSS_data.xlsx',sheet="Site_Info") 
+Habitat<-read_excel('MBSS_data.xlsx',sheet="Habitat")
+Water_Chem<-read_excel('MBSS_data.xlsx',sheet="Water_Chem")
+
+```
+
+
+```{r Munge and Summarize observations}
+
+unique.sites<- Site_Info %>% 
+  group_by(Latitude83,Longitude83) %>% 
+  summarise(n.obs=n())
+unique.sites$Longitude83<-as.numeric(unique.sites$Longitude83)*-1
+
+
+
+
+# make early spatial
+unique.sites %<>% st_as_sf(coords = c('Longitude83',
+                              'Latitude83'), # makes spatial
+                    crs = 26985)            # can look up projections                                                                          # https://epsg.io/
+mapview(unique.sites, zcol = 'n.obs')
+
+```
+
