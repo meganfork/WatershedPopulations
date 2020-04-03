@@ -1,0 +1,141 @@
+---
+title: "WatershedPopulationEstimates"
+author: "M. Fork"
+date: "4/2/2020"
+output: html_document
+---
+
+last updated by M.Fork on 2Apr2020
+
+This code uses overlap between census block polygons and watershed boundaries to estimate the population living in watersheds in the BES landscape. It borrows from code authored by D. Locke and consists of the following chunks:
+
+1. load packages and data
+2. Intersect and find percentages
+
+```{r 1. load packages and data}
+
+library(mapview)   # makes quick and easy webmaps
+library(sf)        # spatial data support
+library(tidyverse) # obvs
+library(tidycensus)# access to Census data in a tidy way 
+
+# Load BES watersheds; shapefiles available at: https://portal.edirepository.org/nis/mapbrowse?packageid=knb-lter-bes.3200.100
+# doi:10.6073/pasta/ad0cce16ef6165913ea26b97e295f985
+GFCP <- read_sf('BESWatershedBoundaries/BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles/Carroll_Park.shp') %>%
+   mutate(watershed_poly = 'Carroll Park')
+GFVN <- read_sf('BESWatershedBoundaries/BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles/Villa_Nova.shp') %>% 
+   mutate(watershed_poly = 'Villa Nova')
+GFGB <- read_sf('BESWatershedBoundaries/BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles/Gwynnbrook.shp') %>% 
+   mutate(watershed_poly = 'Gwynnbrook')
+GFGL <- read_sf('BESWatershedBoundaries/BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles/Glyndon.shp') %>% 
+   mutate(watershed_poly = 'Glyndon')
+BARN <- read_sf('BESWatershedBoundaries/BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles/Baisman_Run.shp') %>% 
+  mutate(watershed_poly = 'Baisman Run')
+POBR <- read_sf('BESWatershedBoundaries/BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles/Pond_Branch.shp') %>%
+   mutate(watershed_poly = 'Pond Branch')
+DRKR <- read_sf('BESWatershedBoundaries/BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles/Dead_Run.shp') %>% 
+   mutate(watershed_poly = 'Dead Run')
+
+system.time(BESsheds <- rbind(BARN,POBR,GFGL,GFGB,GFVN,GFCP,DRKR))
+mapview(BESsheds, zcol = 'watershed_poly')
+
+
+# below is adapated from 
+# https://github.com/DHLocke/New_Haven_Base/blob/master/access_census.R
+# use Census API key
+# mine came from here: http://api.census.gov/data/key_signup.html
+# you can get your own by entering an email address. This is unique per user
+census_api_key('acfe0e75678685fcb7ed2753617e08f488de3a04', install = TRUE, overwrite = TRUE)
+
+# view available variables
+acs_2018 <- load_variables(2018, 'acs5', cache = FALSE)
+
+# set mapping options
+# this makes loading the data faster on the second/subsquent version.
+options(tigris_use_cache = TRUE)
+
+### BLOCK GROUPS
+cbg <- get_acs(state = 'MD',                 # Maryland
+                    county = c('Anne Arundel',
+                               'Baltimore City', 
+                               'Baltimore County',
+                               'Carroll County',
+                               'Harford County',
+                               'Howard County'), 
+                geography = 'block group',   
+                key = 'acfe0e75678685fcb7ed2753617e08f488de3a04',
+                year = 2018,                 
+                survey = 'acs5',             
+                moe_level = 95,              # margin of error level, default is 90 I prefer the tighter 95
+                variables = c(pop = 'B02001_001'),  # see help(get_acs) and the tidycensus links above, this is total population
+                output = 'wide',
+                geometry = TRUE) %>% 
+    st_transform(crs = st_crs(BESsheds)) %>% # reproject to match BES watershed data
+  rename(cbg = 'NAME')
+mapview(cbg, zcol = 'GEOID')
+
+
+mapview(list(cbg,BESsheds))
+
+
+
+### BLOCKS (smaller than CBGs, only available from decennial census)
+sf_2010 <- load_variables(2010, 'sf1', cache = FALSE)
+
+cblocks <- get_decennial(state = 'MD',                 # Maryland
+                        county = c('Anne Arundel',
+                               'Baltimore City', 
+                               'Baltimore County',
+                               'Carroll County',
+                               'Harford County',
+                               'Howard County'), 
+                geography = 'block',   
+                key = 'acfe0e75678685fcb7ed2753617e08f488de3a04',
+                year = 2010, 
+                variables = c(pop = 'P001001'),  # this is total population for the decennial 'sf1' dataset (see sf_2010)
+                output = 'wide',
+                geometry = TRUE) %>% 
+    st_transform(crs = st_crs(BESsheds))  # reproject to match BES watershed data
+
+mapview(cblocks, zcol = 'GEOID') # yes, it's a lot
+
+```
+
+```{r 2. Intersect and find percentages}
+
+### BLOCK GROUPS
+
+pop_intersect_cbg<-st_intersection(BESsheds,cbg) %>% # determine the geometry of the individual intersections between the BES watersheds and the census block groups
+  mutate(area = st_area(.))  # calculate the area of the intersection polygons
+
+for (i in (1:nrow(pop_intersect_cbg))){
+  pop_intersect_cbg$cbd_prop[i]<-pop_intersect_cbg$area[i]/st_area(cbg[which(cbg$GEOID==pop_intersect_cbg$GEOID[i]),]) #for each intersection polygon, determine the proportion of the whole census block group it makes up
+}
+
+pop_intersect_cbg$intersect_pop<-pop_intersect_cbg$popE*pop_intersect_cbg$cbd_prop #multiply these proportions by the census block group population
+stupid.tibble<-(pop_intersect_cbg %>% 
+  group_by(watershed_poly) %>% 
+  summarise(tot_pop = sum(intersect_pop))) #summarize by watershed to get the population of the whole watershed
+watershed_pop_cbg<-data.frame(WatershedName = stupid.tibble$watershed_poly, TotalEstimPop = stupid.tibble$tot_pop)
+
+write.csv(watershed_pop_cbg,"BESwatershedPops_cbg.csv",row.names = F)
+
+
+### BLOCK GROUPS
+pop_intersect_cblocks<-st_intersection(BESsheds,cblocks) %>% # determine the geometry of the individual intersections between the BES watersheds and the census blocks
+  mutate(area = st_area(.))  # calculate the area of the intersection polygons
+
+for (i in (1:nrow(pop_intersect_cblocks))){
+  pop_intersect_cblocks$blk_prop[i]<-pop_intersect_cblocks$area[i]/st_area(cblocks[which(cblocks$GEOID==pop_intersect_cblocks$GEOID[i]),]) #for each intersection polygon, determine the proportion of the whole census block group it makes up
+}
+
+pop_intersect_cblocks$intersect_pop<-pop_intersect_cblocks$pop*pop_intersect_cblocks$blk_prop #multiply these proportions by the census block group population
+dumb.tibble<-(pop_intersect_cblocks %>% 
+  group_by(watershed_poly) %>% 
+  summarise(tot_pop = sum(intersect_pop))) #summarize by watershed to get the population of the whole watershed
+watershed_pop_cblocks<-data.frame(WatershedName = dumb.tibble$watershed_poly, TotalEstimPop = dumb.tibble$tot_pop)
+
+write.csv(watershed_pop_cblocks,"BESwatershedPops_cblocks.csv",row.names = F)
+
+```
+
