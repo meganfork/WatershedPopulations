@@ -35,8 +35,10 @@ POBR <- read_sf('BESWatershedBoundaries/BES-Watersheds-Land-Cover-Analysis/01m/B
    mutate(watershed_poly = 'Pond Branch')
 DRKR <- read_sf('BESWatershedBoundaries/BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles/Dead_Run.shp') %>% 
    mutate(watershed_poly = 'Dead Run')
+MCDN <- read_sf('BESWatershedBoundaries/BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles/McDonogh.shp') %>% 
+   mutate(watershed_poly = 'McDonogh')
 
-system.time(BESsheds <- rbind(BARN,POBR,GFGL,GFGB,GFVN,GFCP,DRKR))
+system.time(BESsheds <- rbind(BARN,POBR,GFGL,GFGB,GFVN,GFCP,DRKR,MCDN))
 mapview(BESsheds, zcol = 'watershed_poly')
 
 
@@ -121,7 +123,7 @@ watershed_pop_cbg<-data.frame(WatershedName = stupid.tibble$watershed_poly, Tota
 write.csv(watershed_pop_cbg,"BESwatershedPops_cbg.csv",row.names = F)
 
 
-### BLOCK GROUPS
+### BLOCKS
 pop_intersect_cblocks<-st_intersection(BESsheds,cblocks) %>% # determine the geometry of the individual intersections between the BES watersheds and the census blocks
   mutate(area = st_area(.))  # calculate the area of the intersection polygons
 
