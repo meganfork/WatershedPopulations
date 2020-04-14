@@ -1,0 +1,159 @@
+---
+title: "BES_Population_per_Watershed"
+author: "M.L. Fork and D.H. Locke"
+date: "4/2/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+last edited: "4/14/2020"
+---
+
+This code uses overlap between Census block polygons and USGS watershed boundaries to estimate the population living in watersheds in the BES landscape.
+
+## 0 setup, load libaries and read in data
+```{r}
+packs <- c('mapview',   # makes quick and easy webmap
+           'sf',        # spatial data support
+           'tidyverse', # just cuz
+           'tidylog',   # makes verbose dplyr and tidyr commands
+           'magrittr',  # tidyverse doesn't bring in all of the pipe functions, just %>% 
+           'tidycensus')# access to Census data in a tidy way (I just want county boundaries)
+                   # additional information and examples
+                   # https://walkerke.github.io/tidycensus/articles/basic-usage.html#searching-for-variables  
+                   # https://walkerke.github.io/tidycensus/articles/spatial-data.html
+# this little snippet assesses whether or not you have the packages above installed
+# if you dont, it installs them all at once! 
+
+if (length(setdiff(packs, rownames(installed.packages()))) > 0) {
+install.packages(setdiff(packs, rownames(installed.packages())))
+}
+lapply(packs, library, character.only = TRUE)
+# use for reading many shapefiles at the same time
+nest <- nest_legacy                    
+unnest <- unnest_legacy
+```
+
+
+## 1a read in watersheds
+```{r}
+# Load BES watersheds; shapefiles available at: https://portal.edirepository.org/nis/mapbrowse?packageid=knb-lter-bes.3200.100
+# doi:10.6073/pasta/ad0cce16ef6165913ea26b97e295f985
+getwd() # where are we?
+list.files('BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles')
+data_path <- 'BES-Watersheds-Land-Cover-Analysis/01m/BES Watershed Boundary Shapefiles'; data_path
+files <- dir(data_path, recursive = TRUE, pattern = "*.shp"); files          # get file names
+BESsheds <- tibble(filename = files) %>%   # create a tibble
+                                 # holding the file names
+  mutate(file_contents = map(filename,          # read files into
+                             ~ st_read(file.path(data_path, .))),
+         watershed = sub("*.shp", '', filename),
+         watershed = sub('_', ' ', watershed)) %>% 
+  unnest() %>%
+  #rename(watershed = filename) %>% 
+  st_as_sf(sf_column_name = 'geometry') %>% # because everything is read in as a list, we have to tell R its sf
+  st_set_crs(26918) %>%                     # NAD 1983 UTM Zone 18N
+  mutate(watershed_area_m2 = st_area(.))
+# st_drop_geometry(BESsheds) %>% View()
+BESsheds
+#mapview(BESsheds) # tons of overlap.. 
+mapview(BESsheds, zcol = 'watershed')
+cor.test(BESsheds$Area_m2, BESsheds$watershed_area_m2) # compare the reported area with calculated area
+plot(BESsheds$Area_m2, BESsheds$watershed_area_m2)
+abline(1,1)
+
+```
+
+## 1b read in Census
+```{r}
+# below is adapated from 
+# https://github.com/DHLocke/New_Haven_Base/blob/master/access_census.R
+# use Census API key 
+# mine came from here: http://api.census.gov/data/key_signup.html
+# you can get your own by entering an email address. This is unique per user
+census_api_key('<insert your API key here>', install = TRUE, overwrite = T)
+
+# set mapping options
+# this makes loading the data faster on the second/subsquent version.
+options(tigris_use_cache = TRUE)
+
+# ### BLOCK GROUPS (pro: additional variables avialable vs. census blocks, con: less accurate)
+
+# view available variables
+# acs_2018 <- load_variables(2018, 'acs5', cache = FALSE)
+# cbg <- get_acs(state = 'MD',                 # Maryland
+#                     county = c('Baltimore City', 
+#                                'Baltimore County'), 
+#                 geography = 'block group',
+#                 year = 2018,                 
+#                 survey = 'acs5',             
+#                 moe_level = 95,              # margin of error level, default is 90 
+#                 variables = c(pop = 'B02001_001'),  # this is total population - see acs_2018
+#                 output = 'wide',
+#                 geometry = TRUE) %>% 
+#     st_transform(crs = st_crs(BESsheds)) %>% # reproject to match BES watershed data
+#   mutate(cbg_area_m2 = st_area(.)) 
+# mapview(cbg, zcol = 'GEOID')
+# mapview(list(cbg,BESsheds))
+
+### BLOCKS (pro: smaller than CBGs, so more accurate estimates, con: only available from decennial census, additional demographic data not available)
+sf_2010 <- load_variables(2010, 'sf1', cache = FALSE)
+cblocks <- get_decennial(state = 'MD',                 # Maryland
+                        county = c('Baltimore City', 
+                                   'Baltimore County'),
+                geography = 'block',   
+                year = 2010, 
+                variables = c(pop = 'P001001'),# this is total population for the decennial 'sf1' dataset (see sf_2010)
+                output = 'wide',
+                geometry = TRUE) %>% 
+    st_transform(crs = st_crs(BESsheds)) %>%  # reproject to match BES watershed data
+  mutate(blk_area_m2 = st_area(.))            # get the area
+#mapview(cblocks, zcol = 'GEOID') # yes, it's a lot
+cblocks
+```
+
+## 2 intersect and re-allocate pop by percent in each watershed
+```{r 2. Intersect and find percentages}
+
+
+# ### BLOCK GROUPS
+# pop_intersect_cbg<-st_intersection(BESsheds,cbg) %>% # determine the geometry of the individual intersections between the BES watersheds and the census blocks
+#  mutate(int_area = st_area(.),              # calculate the area of the intersection polygons
+#         cbg_prop = int_area / cbg_area_m2,  # calculate  proportion of each block in watershed
+#         int_pop = popE*cbg_prop) %>%         # rough population per block
+#  group_by(watershed) %>%                    # get the fractions back together
+#  summarise(adj_tot_pop = sum(int_pop)) %>%  # prefer to call this "adjusted" because its an 
+#                                             # estimate based on the area   
+#  mutate(adj_tot_pop_w = round(adj_tot_pop)) %>% # for max style points, lets get whole numbers
+#  arrange(watershed)                         # alphabetize
+
+# write.csv(st_drop_geometry(pop_intersect_cbg) ,     # we don't need the list of coordinates
+#          "BESwatershedPops_cbg.csv", row.names = F)
+
+
+### BLOCKS
+
+pop_intersect_cblocks<-st_intersection(BESsheds,cblocks) %>% # determine the geometry of the individual intersections between the BES watersheds and the census blocks
+  mutate(int_area = st_area(.),              # calculate the area of the intersection polygons
+         blk_prop = int_area / blk_area_m2,  # calculate  proportion of each block in watershed
+         int_pop = pop*blk_prop) %>%         # rough population per block
+  group_by(watershed) %>%                    # get the fractions back together
+  summarise(adj_tot_pop = sum(int_pop)) %>%  # prefer to call this "adjusted" because its an 
+                                             # estimate based on the area   
+  mutate(adj_tot_pop_w = round(adj_tot_pop)) %>% # for max style points, lets get whole numbers
+  arrange(watershed)                         # alphabetize
+
+# NOTE: run time approx 2625 seconds or ~45 mins
+
+write.csv(st_drop_geometry(pop_intersect_cblocks) ,     # we can drop the list of coordinates
+          "BESwatershedPops_cblocks.csv", row.names = F)
+```
+
+
+
+## CITE your sources
+```{r}
+lapply(packs, citation); rm(packs)
+sessionInfo()
+```
+
+Last Knit on `r format(Sys.time())`
